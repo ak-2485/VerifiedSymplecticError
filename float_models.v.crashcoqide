@@ -1,0 +1,158 @@
+From vcfloat Require Import FPLang FPLangOpt RAux 
+  Rounding Reify Float_notations Automate .
+Require Import IntervalFlocq3.Tactic.
+Import Binary.
+Import List ListNotations.
+Set Bullet Behavior "Strict Subproofs".
+
+(*
+From Coquelicot Require Import Coquelicot.
+*)
+Open Scope R_scope.
+
+(*
+Fixpoint n_stepsR (M : @matrix R 2 2) (u : matrix 2 1) (n : nat) : matrix 2 1 :=
+match n with
+  | 0%nat => u
+  | S n' => Mmult M (n_stepsR M u n') 
+end.
+
+Definition M_midpoint (h : R) : @matrix R 2 2 := 
+[[ (1 - h^2/4) / (1 + h^2/4) , h / (1 + h^2/4) ],
+ [  -h / (1 + h^2/4)         , (1 - h^2/4) / (1 + h^2/4)]].
+
+Definition M_Verlet (h : R) : @matrix R 2 2 := 
+[[ 1 - h^2/2 , -h + h^3/4],
+ [ h         , 1 - h^2/2 ]].
+
+
+*)
+Section WITHNANS.
+
+Context {NANS: Nans}.
+
+Definition _h : ident := 1%positive.
+
+Definition vmap_list (h : ftype Tsingle) :=    [(_h, existT ftype _ h)].
+
+Definition vmap (h : ftype Tsingle) : valmap  :=
+ ltac:(let z := compute_PTree (valmap_of_list (vmap_list h)) in exact z).
+
+Definition bmap_list : list varinfo := 
+  [ Build_varinfo Tsingle _h (-2)  2].
+
+Definition bmap : boundsmap :=
+ ltac:(let z := compute_PTree (boundsmap_of_list bmap_list) in exact z).
+
+Definition M_midpointF_AD (h : ftype Tsingle) := ((1 -(h*h)/4) / (1 + (h*h)/4))%F32.
+Definition M_midpointF_B  (h : ftype Tsingle)  := (h / (1 + (h*h)/4))%F32.
+Definition M_midpointF_C  (h : ftype Tsingle) := (- M_midpointF_B h)%F32.
+
+Definition M_midpointF_list :=
+  let A := ltac:(let e' :=  HO_reify_float_expr constr:([_h]) M_midpointF_AD in exact e') in
+  let B := ltac:(let e' :=  HO_reify_float_expr constr:([_h]) M_midpointF_B in exact e') in
+  let C := ltac:(let e' :=  HO_reify_float_expr constr:([_h]) M_midpointF_C in exact e') in
+    [A;B;C;A].
+
+Definition M_midpointR_list (h : ftype Tsingle) : list R := 
+  map (fun e => (FT2R (fval (env_ (vmap h)) e))) M_midpointF_list. 
+
+From Coquelicot Require Import Coquelicot.
+
+Definition list_to_matrix (l : list R) (n : nat) : matrix n n :=
+    mk_matrix n n (fun i j => List.nth (i * n + j) l 0%R ).
+
+Definition M_midpointR (h : ftype Tsingle) := list_to_matrix (M_midpointR_list h) 2.
+
+Definition detM (M : matrix 2 2) := 
+ Rabs( (coeff_mat zero M 0%nat 0) * (coeff_mat zero M 1 1) -
+    (coeff_mat zero M 1 0 ) * (coeff_mat zero M 0 1)).
+
+Lemma midpoint_symp_error (h : ftype Tsingle) :
+boundsmap_denote bmap (vmap h) ->
+detM (M_midpointR h) <= 0.002. 
+Proof.
+intros.
+cbv [M_midpointR M_midpointR_list list_to_matrix M_midpointF_list map ].
+repeat match goal with |- context[ fval ?a  ?b] =>
+  let e:= fresh "e" in set (e:=  b);
+  let f:= fresh "f" in set (f:=  fval a e)
+end.
+cbv [detM]. 
+repeat rewrite coeff_mat_bij; try lia.
+simpl.
+
+assert (P1: prove_rndval bmap (vmap h) e) by (prove_rndval; interval).
+assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P1.
+subst f.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end.
+
+assert (P2: prove_rndval bmap (vmap h) e0) by (prove_rndval; interval).
+assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P2.
+subst f0.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end.
+
+assert (P3: prove_rndval bmap (vmap h) e1) by (prove_rndval; interval).
+subst e0.
+unfold_prove_rndval P3.
+subst f1.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end.
+
+clear e1. clear e.
+
+cbv [Datatypes.id].
+repeat match goal with |- context[ @FT2R (type_lub ?a ?b) ?e ] =>
+  let a':= fresh "a'" in 
+  set (a' := (type_lub a b) ) ;
+     let y := eval compute in a' in change a' with y; clear a'
+ end.
+fold Tsingle.
+
+
+
+ (* incorporate the equation above the line *)
+repeat match goal with H: _ = @FT2R _ _ |- _ => rewrite <- H; clear H end.
+ (* Perform all env lookups *)
+ repeat 
+    match goal with
+    | |- context [env_ ?a ?b ?c] =>
+       let u := constr:(env_ a b c) in let v := eval hnf in u in change u with v
+   end;
+ (* Clean up all FT2R constants *)
+ repeat match goal with
+ | |- context [@FT2R ?t (b32_B754_finite ?s ?m ?e ?H)] =>
+ let j := fresh "j" in 
+  set (j :=  @FT2R t (b32_B754_finite s m e H));
+  simpl in j; subst j
+ | |- context [@FT2R ?t (b64_B754_finite ?s ?m ?e ?H)] =>
+ let j := fresh "j" in 
+  set (j :=  @FT2R t (b64_B754_finite s m e H));
+  simpl in j; subst j
+ end;
+ rewrite <- ?(F2R_eq radix2);
+ (* clean up all   F2R radix2 {| Defs.Fnum := _; Defs.Fexp := _ |}   *)
+ rewrite ?cleanup_Fnum;
+ repeat match goal with |- context [cleanup_Fnum' ?f ?e] =>
+  let x := constr:(cleanup_Fnum' f e) in
+  let y := eval cbv - [Rdiv IZR] in x in
+  change x with y
+ end;
+ (* Abstract all FT2R variables *)
+ repeat 
+  match goal with |- context [@FT2R ?t ?e] =>
+     is_var e;
+     let e' := fresh e in
+     set (e' := @FT2R Tsingle e) in *; clearbody e'; clear e; rename e' into e
+  end;
+ (* clean up all powerRZ expressions *)
+ compute_powerRZ.
+
+ match goal with |- context [Rabs ?a <= _] => field_simplify a end.
+
+End WITHNANS.
