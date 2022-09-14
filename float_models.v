@@ -45,7 +45,7 @@ Definition bmap : boundsmap :=
 Definition M_midpointF_list := 
 [ fun (h : ftype Tsingle) => ((1 -(h*h)/4) / (1 + (h*h)/4))%F32; 
   fun (h : ftype Tsingle) => (h / (1 + (h*h)/4))%F32; 
-  fun (h : ftype Tsingle) =>  h%F32 ; 
+  fun (h : ftype Tsingle) => (-h / (1 + (h*h)/4))%F32; 
   fun (h : ftype Tsingle) => ((1 -(h*h)/4) / (1 + (h*h)/4))%F32 ].
 
 
@@ -187,12 +187,13 @@ match goal with e := _ : ftype _ |- _ =>
  end.
 
 
-(* assert (P: prove_rndval bmap (vmap h) e) by (prove_rndval; interval).
-assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P. *)
+assert (P: prove_rndval bmap (vmap h) e) by (prove_rndval; interval).
+assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P.
 subst f.
 match goal with e := _ : ftype _ |- _ =>
      change (fval _ _) with e; clearbody e
- end. clear e.
+ end. clear e. 
+
 
 assert (P2: prove_rndval bmap (vmap h) e0) by (prove_rndval; interval).
 assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P2.
@@ -255,7 +256,7 @@ boundsmap_denote bmap (vmap h) ->
 Rabs (detM (M_midpointR h) - 1) <= 4e-06. 
 Proof.
 intros.
-cbv [M_midpointR M_midpointR_list list_to_matrix M_midpointF_list map ].
+cbv [M_midpointR M_midpointR_list M_midpoint_expr_list list_to_matrix map ].
 repeat match goal with |- context[ fval ?a  ?b] =>
   let e:= fresh "e" in set (e:=  b);
   let f:= fresh "f" in set (f:=  fval a e)
@@ -263,26 +264,84 @@ end.
 cbv [detM]. 
 repeat rewrite coeff_mat_bij; try lia.
 simpl.
-assert (P1: prove_rndval bmap (vmap h) e) by (prove_rndval; interval).
-assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P1.
-subst f.
-match goal with e := _ : ftype _ |- _ =>
-     change (fval _ _) with e; clearbody e
- end.
-assert (P2: prove_rndval bmap (vmap h) e0) by (prove_rndval; interval).
-assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P2.
-subst f0.
-match goal with e := _ : ftype _ |- _ =>
-     change (fval _ _) with e; clearbody e
- end.
-assert (P3: prove_rndval bmap (vmap h) e1) by (prove_rndval; interval).
-subst e0.
-unfold_prove_rndval P3.
-subst f1.
-match goal with e := _ : ftype _ |- _ =>
-     change (fval _ _) with e; clearbody e
- end.
-clear e1. clear e.
+
+assert (boundsmap_denote bmap (vmap h)) by auto; 
+assert (P: prove_rndval bmap (vmap h) e1) by (prove_rndval; interval).
+
+(** changes to unfold_prove_rndval*)
+match type of P with prove_rndval _ _ _ => idtac end;
+let BMD := fresh "BMD" in 
+  match goal with H: boundsmap_denote _ _ |- _ => rename H into BMD end;
+let H2 := fresh "H2" in let H3 := fresh "H3" in let r := fresh "r" in let s := fresh "s" in
+destruct P as [[r s] [H2 H3]];
+specialize (H3 BMD);
+process_boundsmap_denote;
+compute in H2; inversion H2; clear H2; subst;
+fold Tsingle in H3; fold Tdouble in H3;
+apply rndval_with_cond_result1_e in H3;
+let errors := fresh "errors" in let H0 := fresh "H0" in
+destruct H3 as [errors [H0 H2]].
+let e := fresh "e" in 
+ match type of H2 with context [fval ?env ?ee] => 
+   set (e := fval env ee) in H2;
+  let e1 := eval hnf in ee in change ee with e1 in e;
+  cbv beta iota zeta delta [
+      fval
+      fop_of_binop fop_of_rounded_binop cast_lub_l cast_lub_r
+      fop_of_unop fop_of_rounded_unop fop_of_exact_unop
+      option_pair_of_options] in e;
+   try change (type_of_expr _) with Tsingle in e;
+   try change (type_of_expr _) with Tdouble in e;
+   try change (type_lub _ _) with Tsingle in e;
+   try change (type_lub _ _) with Tdouble in e;
+   repeat change (type_lub ?x ?y) with x in e;
+   repeat change (type_lub ?x ?y) with y in e;
+   repeat change (cast  _ _ ?x) with x in e;
+   repeat 
+    match goal with
+    | e := context [env_ ?a ?b ?c] |- _ =>
+       let u := constr:(env_ a b c) in let v := eval hnf in u in change u with v in *
+   end
+end.
+ let FIN := fresh "FIN" in 
+ destruct H2 as [FIN H2];
+ unfold e in H2.
+cbv beta iota zeta delta [
+         reval Prog.binary Prog.unary Prog.real_operations
+         Tree.binary_real Tree.unary_real] 
+   in H2;
+   repeat 
+    match type of H2 with context [env_ ?a ?b ?c] =>
+       let u := constr:(env_ a b c) in let v := eval hnf in u in change u with v in H2
+   end.
+change (Build_radix _ _) with radix2 in H2.
+
+
+try change (type_of_expr _) with Tsingle in *;
+try change (type_of_expr _) with Tdouble in *;
+fold (@FT2R Tsingle) in *;
+fold (@FT2R Tdouble) in *.
+try repeat (let E := fresh "E" in  (*add try *)
+            assert (E := Forall_inv H0); simpl in E;
+          match type of E with
+           |  Rle (Rabs ?a) (error_bound _ Normal') => 
+                let d := fresh "d" in set (d := a) in *; clearbody d
+           |  Rle (Rabs ?a) (error_bound _ Denormal') => 
+                let d := fresh "e" in set (d := a) in *; clearbody d
+           |  Rle (Rabs ?a) (error_bound _ Denormal2') => 
+                   let d := fresh "e" in set (d := a) in *; clearbody d
+           end;
+           unfold error_bound in E;
+           simpl bpow in E;
+           rewrite Zpower_pos_powerRZ in E; 
+           rewrite mul_hlf_powerRZ in E;
+           simpl Z.sub in E;
+           apply Forall_inv_tail in H0).
+try match type of H0 with List.Forall _ (Maps.PTree.elements Maps.PTree.Empty) => clear H0 end; (**add this*)
+try match type of H0 with Forall _ nil => clear H0 end.
+
+(*****)
+
 cbv [Datatypes.id].
 repeat match goal with |- context[ @FT2R (type_lub ?a ?b) ?e ] =>
   let a':= fresh "a'" in 
@@ -290,6 +349,29 @@ repeat match goal with |- context[ @FT2R (type_lub ?a ?b) ?e ] =>
      let y := eval compute in a' in change a' with y; clear a'
  end.
 fold Tsingle.
+
+subst f1.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end.
+
+
+assert (P: prove_rndval bmap (vmap h) e) by (prove_rndval; interval).
+assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P.
+subst f.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end. clear e. 
+
+
+assert (P2: prove_rndval bmap (vmap h) e0) by (prove_rndval; interval).
+assert (boundsmap_denote bmap (vmap h)) by auto; unfold_prove_rndval P2.
+subst f0.
+match goal with e := _ : ftype _ |- _ =>
+     change (fval _ _) with e; clearbody e
+ end. clear e0. 
+
+
  (* incorporate the equation above the line *)
 repeat match goal with H: _ = @FT2R _ _ |- _ => rewrite <- H; clear H end.
  (* Perform all env lookups *)
@@ -326,12 +408,16 @@ repeat match goal with H: _ = @FT2R _ _ |- _ => rewrite <- H; clear H end.
   end;
  (* clean up all powerRZ expressions *)
  compute_powerRZ.
+match goal with |- (Rabs ?t ) <= ?r => 
+  field_simplify t end.
 
-match goal with |- Rabs ?t <= ?r => interval_intro (Rabs t)
-with ( i_taylor h) as H99 end.
+match goal with |- (Rabs ?t ) <= ?r => 
+  interval_intro ( (Rabs t )) with ( i_taylor (FT2R h), i_degree 15) as H99 end.
+
 eapply Rle_trans; [ apply H99 | clear  ].
-compute;lra.
+compute. nra.
 Qed.
+
 
 
 End WITHNANS.
